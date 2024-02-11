@@ -1,0 +1,313 @@
+---
+title: "InStep - data explanatory"
+author: "Nataliya Peshekhodko"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Read data
+
+
+```{r, message=FALSE, warning=FALSE}
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(gbm)
+library(caret)
+library(randomForest)
+```
+
+
+Reading completed dimensions, completed data investigation tasks and demographic datasets.
+
+```{r}
+demographic_path = "data/User Demographics Filtered.xlsx"
+dimensions_completed_path = "data/Dimensions Completed.xlsx"
+data_investigation_completed_path = "data/Data Investigations Completed Filtered.xlsx"
+
+
+user_demographic_df = read_excel(demographic_path)
+dimensions_completed_df = read_excel(dimensions_completed_path)
+data_investigation_completed_df = read_excel(data_investigation_completed_path)
+
+head(user_demographic_df)
+head(dimensions_completed_df)
+head(data_investigation_completed_df)
+```
+
+### Analyzing public users only and completed modules
+
+
+Unique combinations of 
+
+
+```{r}
+unique_combinations <- unique(subset(dimensions_completed_df, select = c(dimension, module)))
+print(unique_combinations)
+```
+
+
+Looking at public users only
+
+```{r, warning=FALSE, message=FALSE}
+modules_public_users_df = dimensions_completed_df %>%
+  filter(#is.na(module_completed_at) &
+         !organization_name %in% c("InSTEP & RTI", "Advisors", 'First 75')) %>%
+  select(user_id, organization_name, dimension, module, module_completed_at) %>%
+  distinct()
+
+head(modules_public_users_df)
+```
+
+
+If for the same `user_id`, `organization_name`, `dimension` and `module` there are several records and one of them has `completed_at` not `NA`, keep that value, otherwise keep `NA` and remove duplicates.
+
+```{r}
+modules_public_users_filtered_df = modules_public_users_df %>%
+  group_by(user_id, organization_name, dimension, module) %>%
+  mutate(module_completed_at = if_else(any(!is.na(module_completed_at)), 
+                                       first(module_completed_at[!is.na(module_completed_at)]), 
+                                       NA_character_)) %>%
+  ungroup()
+
+modules_public_users_filtered_df = distinct(modules_public_users_filtered_df)
+modules_public_users_filtered_df
+```
+
+
+
+
+
+```{r}
+user_demographic_fileterd_df = user_demographic_df %>%
+  select(user_id, organization_name, country, state, hispanic, reg_grade_levels, educator_roles, teach_subjects, racial_identieis, education_level, gender)
+user_demographic_fileterd_df
+```
+
+```{r}
+merged_df = merge(modules_public_users_filtered_df, 
+                  user_demographic_fileterd_df, by = c("user_id", "organization_name"), all.x = TRUE)
+merged_df
+```
+
+
+Checking for missing values
+
+```{r}
+missing_values = sum(is.na(merged_df))
+missing_values_per_column = colSums(is.na(merged_df))
+
+cat("Total missing values in the dataframe:", missing_values, "\n")
+print(missing_values_per_column)
+```
+
+
+```{r, message=FALSE}
+module_counts <- merged_df %>%
+  group_by(module, has_completion = !is.na(module_completed_at)) %>%
+  summarise(count = n())
+
+ggplot(module_counts, aes(x = module, y = count, fill = has_completion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "", y = "Count", fill = "Completion") +
+  ggtitle("Count of Records by Module and Completion Status") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 50, hjust = 1))
+```
+
+
+
+```{r, message=FALSE}
+
+module_counts <- merged_df %>%
+  group_by(education_level, has_completion = !is.na(module_completed_at),) %>%
+  summarise(count = n())
+
+ggplot(module_counts, aes(x = education_level, y = count, fill = has_completion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Education Level", y = "Count", fill = "Completion Status") +
+  ggtitle("Count of Completed and Non-completed Modules by Education Level") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+```{r}
+module_counts <- merged_df %>%
+  group_by(educator_roles, has_completion = !is.na(module_completed_at)) %>%
+  summarise(count = n(), .groups = "drop")
+
+ggplot(module_counts, aes(x = educator_roles, y = count, fill = has_completion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Educator Roles", y = "Count", fill = "Completion Status") +
+  ggtitle("Count of Completed and Non-completed Modules by Educator Roles") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+
+
+```{r, message=FALSE, fig.height = 12, fig.width = 15}
+module_counts <- merged_df %>%
+  group_by(teach_subjects, has_completion = !is.na(module_completed_at)) %>%
+  summarise(count = n(), .groups = "drop")
+
+ggplot(module_counts, aes(x = teach_subjects, y = count, fill = has_completion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "Teaching Subjects", y = "Count", fill = "Completion Status") +
+  ggtitle("Count of Completed and Non-completed Modules by Teaching Subjects") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+
+Create `target` variable: 0 if user didn't complete module and 1 if module was completed.
+
+```{r}
+merged_df$target = ifelse(is.na(merged_df$module_completed_at), 0, 1)
+print(merged_df)
+```
+
+Checking for `NA` values again
+
+```{r}
+missing_values = sum(is.na(merged_df))
+missing_values_per_column = colSums(is.na(merged_df))
+
+cat("Total missing values in the dataframe:", missing_values, "\n")
+print(missing_values_per_column)
+```
+
+```{r}
+unique(merged_df$country)
+```
+
+
+
+
+```{r}
+unique(merged_df$educator_roles)
+```
+
+
+```{r}
+module_counts = table(merged_df$module)
+print(module_counts)
+```
+
+Looks like for some modules number of observations is very small.
+
+```{r}
+educator_roles_counts <- merged_df %>%
+  count(educator_roles, name = "Freq", sort = TRUE, na.rm = FALSE) %>%
+  mutate(educator_roles = ifelse(is.na(educator_roles), "NA", as.character(educator_roles))) %>%
+  select(-na.rm)
+educator_roles_counts
+```
+For `educator_roles` NA values could be replaced with `Other`. 
+
+
+```{r}
+teach_subjects_counts <- merged_df %>%
+  count(teach_subjects, name = "Freq", sort = TRUE, na.rm = FALSE) %>%
+  mutate(teach_subjects = ifelse(is.na(teach_subjects), "NA", as.character(teach_subjects)))
+teach_subjects_counts
+```
+
+
+Looks like for `teach_subjects` NA also could be replaced with `Other`. 
+
+```{r}
+education_level_counts <- merged_df %>%
+  count(education_level, name = "Freq", sort = TRUE, na.rm = FALSE) %>%
+  mutate(education_level = ifelse(is.na(education_level), "NA", as.character(education_level)))
+education_level_counts
+```
+
+For education level `NA` values will be replaced with `Not provided`.
+
+
+```{r}
+gender_counts <- table(merged_df$gender, useNA = "ifany")
+gender_counts
+```
+
+
+
+
+Drop columns `module_completed_at`, `state`, `hispanic`, `racial_identieis`, `user_id` and `reg_grade_levels`  
+For column `educator_roles` replace `NA` with `Other`.
+For column `teach_subjects` replace `NA` with `Other`.
+For column `education_level` replace `NA` with `Not provided`. 
+For column `gender` replace `NA` with `Prefer not to answer`.
+
+```{r}
+merged_df_updated <- merged_df %>%
+  select(-module_completed_at, -state, -hispanic, -racial_identieis, -reg_grade_levels, -user_id, -organization_name) %>%
+  mutate(
+    educator_roles = ifelse(is.na(educator_roles), "Other", educator_roles),
+    teach_subjects = ifelse(is.na(teach_subjects), "Other", teach_subjects),
+    education_level = ifelse(is.na(education_level), "Not provided", education_level),
+    gender = ifelse(is.na(gender), "Prefer not to answer", gender)
+  )
+
+
+print(merged_df_updated)
+```
+
+```{r}
+missing_values = sum(is.na(merged_df_updated))
+missing_values_per_column = colSums(is.na(merged_df_updated))
+
+cat("Total missing values in the dataframe:", missing_values, "\n")
+print(missing_values_per_column)
+```
+
+
+```{r}
+str(merged_df_updated)
+```
+
+```{r}
+merged_df_updated <- merged_df_updated %>%
+  mutate_if(is.character, as.factor)
+
+# Print the structure of the updated dataframe
+str(merged_df_updated)
+```
+
+
+Attempt to fit XGBoost model. XGBoost is not converging.
+
+```{r, message=FALSE, warning=FALSE}
+merged_df_updated$target <- as.factor(merged_df_updated$target)
+
+set.seed(123)
+trainIndex = createDataPartition(merged_df_updated$target, p = 0.7, list = FALSE)
+train = merged_df_updated[trainIndex, ]
+test = merged_df_updated[-trainIndex, ]
+
+gbm_model <- train(target ~ ., data = train, method = "gbm",
+                   trControl = trainControl(method = "cv", number = 5),
+                   metric = "Accuracy",
+                   distribution = "bernoulli", n.trees = 100, interaction.depth = 3)
+
+print(gbm_model)
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+rf_model = randomForest(target ~ ., data = train, ntree = 500, importance = TRUE)
+print(rf_model)
+
+test_predictions_rf = predict(rf_model, newdata = test)
+test_accuracy_rf = sum(test_predictions_rf == test$target) / length(test$target)
+print(paste("Test Accuracy (Random Forest):", test_accuracy_rf))
+```
+
+```{r}
+print(importance(rf_model))
+```
